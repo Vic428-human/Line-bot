@@ -28,18 +28,31 @@ async def webhook(request: Request):
     
     return "OK"
 
-# 收到文字訊息時
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_message = event.message.text
-    
-    # 存進 Supabase
-    supabase.table("diaries").insert({
-        "content": user_message
-    }).execute()
-    
-    # 回覆確認訊息
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text="日記已收到 ✅")
-    )
+    user_id = event.source.user_id
+
+    # 判斷是否為日記指令
+    if user_message.startswith("/日記"):
+        content = user_message[3:].strip()
+        word_count = len(content)
+
+        supabase.table("diaries").insert({
+            "content": content,
+            "line_user_id": user_id,
+            "word_count": word_count,
+            "is_processed": False,
+            "diary_date": None
+        }).execute()
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="✅ 智能體已經把主人餵的資料通通吃光光，現在進化中！")
+        )
+    else:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="🚧 功能開發中 ")
+        )
