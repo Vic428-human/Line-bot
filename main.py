@@ -9,23 +9,45 @@ import os
 # 載入 .env 的金鑰
 load_dotenv()
 
-# 初始化
+# 初始化 FastAPI
 app = FastAPI()
-line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+# 讀取環境變數
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# 檢查必要環境變數是否存在
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN environment variable")
+
+if not LINE_CHANNEL_SECRET:
+    raise RuntimeError("Missing LINE_CHANNEL_SECRET environment variable")
+
+if not SUPABASE_URL:
+    raise RuntimeError("Missing SUPABASE_URL environment variable")
+
+if not SUPABASE_KEY:
+    raise RuntimeError("Missing SUPABASE_KEY environment variable")
+
+# 初始化 LINE Bot 與 Supabase
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 # LINE Webhook 接收端點
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
-    
+
     try:
         handler.handle(body.decode("utf-8"), signature)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
-    
+
     return "OK"
 
 
