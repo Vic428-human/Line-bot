@@ -90,8 +90,10 @@ def handle_message(event):
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="✅ 智能體已經把主人餵的資料通通吃光光，現在進化中！"),
-            TextSendMessage(text="✅ 自動部署測試成功！")
+            [
+                TextSendMessage(text="✅ 智能體已經把主人餵的資料通通吃光光，現在進化中！"),
+                TextSendMessage(text="✅ 自動部署測試成功！")
+            ]
         )
     else:
         line_bot_api.reply_message(
