@@ -2,9 +2,9 @@ from fastapi import FastAPI, Request, HTTPException
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from supabase import create_client
 from dotenv import load_dotenv
 import os
+import httpx
 
 # 載入 .env 的金鑰
 load_dotenv()
@@ -31,10 +31,31 @@ if not SUPABASE_URL:
 if not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_KEY environment variable")
 
-# 初始化 LINE Bot 與 Supabase
+# 初始化 LINE Bot
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+async def insert_diary(content: str, user_id: str, word_count: int):
+    """用 httpx 直接呼叫 Supabase REST API 插入日記"""
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{SUPABASE_URL}/rest/v1/diaries",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            },
+            json={
+                "content": content,
+                "line_user_id": user_id,
+                "word_count": word_count,
+                "is_processed": False,
+                "diary_date": None
+            }
+        )
+        response.raise_for_status()
 
 
 # LINE Webhook 接收端點
@@ -61,17 +82,16 @@ def handle_message(event):
         content = user_message[3:].strip()
         word_count = len(content)
 
-        supabase.table("diaries").insert({
-            "content": content,
-            "line_user_id": user_id,
-            "word_count": word_count,
-            "is_processed": False,
-            "diary_date": None
-        }).execute()
+        # 使用 httpx 異步插入資料
+        import asyncio
+        asyncio.create_task(
+            insert_diary(content, user_id, word_count)
+        )
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="✅ 智能體已經把主人餵的資料通通吃光光，現在進化中！")
+            TextSendMessage(text="✅ 智能體已經把主人餵的資料通通吃光光，現在進化中！"),
+            TextSendMessage(text="✅ 自動部署測試成功！")
         )
     else:
         line_bot_api.reply_message(
