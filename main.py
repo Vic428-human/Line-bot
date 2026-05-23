@@ -8,20 +8,16 @@ import httpx
 import json
 import asyncio
 
-# 載入 .env 的金鑰
 load_dotenv()
 
-# 初始化 FastAPI
 app = FastAPI()
 
-# 讀取環境變數
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-# 檢查必要環境變數
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_SECRET:
@@ -33,16 +29,14 @@ if not SUPABASE_KEY:
 if not ANTHROPIC_API_KEY:
     raise RuntimeError("Missing ANTHROPIC_API_KEY")
 
-# 初始化 LINE Bot
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 
 async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
-    """插入日記，然後呼叫 Claude 解析摘要"""
     async with httpx.AsyncClient() as client:
 
-        # 第一步：插入原始日記，取得 id
+        # 第一步：插入原始日記
         response = await client.post(
             f"{SUPABASE_URL}/rest/v1/diaries",
             headers={
@@ -61,8 +55,9 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
         )
         response.raise_for_status()
         diary_id = response.json()[0]["id"]
+        print("diary_id:", diary_id)
 
-        # 第二步：呼叫 Claude API 解析
+        # 第二步：呼叫 Claude API
         claude_response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -76,14 +71,14 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 "messages": [{
                     "role": "user",
                     "content": f"""請分析以下日記內容，只回傳純 JSON，不要加任何 markdown 符號或反引號：
-                    {{
-                    "diary_date": "日記描述的日期 YYYY-MM-DD，無法判斷填 null",
-                    "location": "地點，無則填 null",
-                    "people": "提到的人物用逗號分隔，無則填 null",
-                    "emotion": "從以下選一個：開心、難過、平靜、興奮、焦慮、憤怒、感恩、其他",
-                    "keywords": "3-5個關鍵詞用逗號分隔",
-                    "summary": "一句話摘要20字以內"
-                    }}
+{{
+  "diary_date": "日記描述的日期 YYYY-MM-DD，無法判斷填 null",
+  "location": "地點，無則填 null",
+  "people": "提到的人物用逗號分隔，無則填 null",
+  "emotion": "從以下選一個：開心、難過、平靜、興奮、焦慮、憤怒、感恩、其他",
+  "keywords": "3-5個關鍵詞用逗號分隔",
+  "summary": "一句話摘要20字以內"
+}}
 
 日記內容：
 {content}"""
@@ -91,38 +86,39 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
             },
             timeout=30.0
         )
-        print("Claude response:", claude_response.status_code, claude_response.text)
         claude_response.raise_for_status()
         parsed_text = claude_response.json()["content"][0]["text"]
-        # 移除 markdown 的反引號
+        print("Claude raw:", parsed_text)
+
+        # 清除 markdown
         parsed_text = parsed_text.strip()
         if parsed_text.startswith("```"):
             parsed_text = parsed_text.split("```")[1]
             if parsed_text.startswith("json"):
                 parsed_text = parsed_text[4:]
         parsed = json.loads(parsed_text.strip())
+        print("parsed:", parsed)
 
         # 第三步：插入摘要
-print("parsed result:", parsed)
-summary_res = await client.post(
-    f"{SUPABASE_URL}/rest/v1/diary_summaries",
-    headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=minimal"
-    },
-    json={
-        "diary_id": diary_id,
-        "diary_date": parsed.get("diary_date"),
-        "location": parsed.get("location"),
-        "people": parsed.get("people"),
-        "emotion": parsed.get("emotion"),
-        "keywords": parsed.get("keywords"),
-        "summary": parsed.get("summary")
-    }
-)
-print("Summary insert status:", summary_res.status_code, summary_res.text)
+        summary_res = await client.post(
+            f"{SUPABASE_URL}/rest/v1/diary_summaries",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            },
+            json={
+                "diary_id": diary_id,
+                "diary_date": parsed.get("diary_date"),
+                "location": parsed.get("location"),
+                "people": parsed.get("people"),
+                "emotion": parsed.get("emotion"),
+                "keywords": parsed.get("keywords"),
+                "summary": parsed.get("summary")
+            }
+        )
+        print("Summary insert:", summary_res.status_code, summary_res.text)
 
         # 第四步：更新 is_processed
         await client.patch(
@@ -134,9 +130,9 @@ print("Summary insert status:", summary_res.status_code, summary_res.text)
             },
             json={"is_processed": True}
         )
+        print("Done!")
 
 
-# LINE Webhook 接收端點
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
@@ -159,7 +155,6 @@ def handle_message(event):
         content = user_message[3:].strip()
         word_count = len(content)
 
-        # 背景執行：存日記 + Claude 解析
         asyncio.create_task(
             insert_diary_and_parse(content, user_id, word_count)
         )
