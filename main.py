@@ -71,7 +71,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-5",
                 "max_tokens": 1000,
                 "messages": [{
                     "role": "user",
