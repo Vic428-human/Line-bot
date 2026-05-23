@@ -91,6 +91,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
             },
             timeout=30.0
         )
+        print("Claude response:", claude_response.status_code, claude_response.text)
         claude_response.raise_for_status()
         parsed_text = claude_response.json()["content"][0]["text"]
         parsed = json.loads(parsed_text)
