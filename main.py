@@ -94,7 +94,13 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
         print("Claude response:", claude_response.status_code, claude_response.text)
         claude_response.raise_for_status()
         parsed_text = claude_response.json()["content"][0]["text"]
-        parsed = json.loads(parsed_text)
+        # 移除 markdown 的反引號
+        parsed_text = parsed_text.strip()
+        if parsed_text.startswith("```"):
+            parsed_text = parsed_text.split("```")[1]
+            if parsed_text.startswith("json"):
+                parsed_text = parsed_text[4:]
+        parsed = json.loads(parsed_text.strip())
 
         # 第三步：插入摘要
         await client.post(
