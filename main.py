@@ -1,170 +1,160 @@
-from fastapi import FastAPI, Request, HTTPException
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from dotenv import load_dotenv
-import os
-import httpx
 import json
-import asyncio
+import re
+import logging
+from json_repair import repair_json  # pip install json-repair
 
-load_dotenv()
-
-app = FastAPI()
-
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-
-if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
-if not LINE_CHANNEL_SECRET:
-    raise RuntimeError("Missing LINE_CHANNEL_SECRET")
-if not SUPABASE_URL:
-    raise RuntimeError("Missing SUPABASE_URL")
-if not SUPABASE_KEY:
-    raise RuntimeError("Missing SUPABASE_KEY")
-if not ANTHROPIC_API_KEY:
-    raise RuntimeError("Missing ANTHROPIC_API_KEY")
-
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
+logger = logging.getLogger(__name__)
 
 async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
-    async with httpx.AsyncClient() as client:
+    diary_id = None
+    try:
+        async with httpx.AsyncClient() as client:
+            
+            # ==================== 1. 插入原始日記 ====================
+            response = await client.post(
+                f"{SUPABASE_URL}/rest/v1/diaries",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=representation"
+                },
+                json={
+                    "content": content,
+                    "line_user_id": user_id,
+                    "word_count": word_count,
+                    "is_processed": False,
+                    "diary_date": None
+                },
+                timeout=10.0
+            )
+            response.raise_for_status()
+            diary_data = response.json()[0]
+            diary_id = diary_data["id"]
+            
+            logger.info(f"日記已儲存 - ID: {diary_id}, 字數: {word_count}")
 
-        # 第一步：插入原始日記
-        response = await client.post(
-            f"{SUPABASE_URL}/rest/v1/diaries",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=representation"
-            },
-            json={
-                "content": content,
-                "line_user_id": user_id,
-                "word_count": word_count,
-                "is_processed": False,
-                "diary_date": None
-            }
-        )
-        response.raise_for_status()
-        diary_id = response.json()[0]["id"]
-        print("diary_id:", diary_id)
+            # ==================== 2. 呼叫 Claude API (Token 優化版) ====================
+            optimized_prompt = f"""你是一位專業日記分析助手。請嚴格只回傳純JSON，不要有任何其他文字、解釋或markdown。
 
-        # 第二步：呼叫 Claude API
-        claude_response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "claude-sonnet-4-5",
-                "max_tokens": 1000,
-                "messages": [{
-                    "role": "user",
-                    "content": f"""請分析以下日記內容，只回傳純 JSON，不要加任何 markdown 符號或反引號：
 {{
-  "diary_date": "日記描述的日期 YYYY-MM-DD，無法判斷填 null",
-  "location": "地點，無則填 null",
-  "people": "提到的人物用逗號分隔，無則填 null",
-  "emotion": "從以下選一個：開心、難過、平靜、興奮、焦慮、憤怒、感恩、其他",
+  "diary_date": "YYYY-MM-DD 或 null",
+  "location": "地點或 null",
+  "people": "人物用逗號分隔或 null",
+  "emotion": "開心/難過/平靜/興奮/焦慮/憤怒/感恩/其他",
   "keywords": "3-5個關鍵詞用逗號分隔",
-  "summary": "一句話摘要20字以內"
+  "summary": "20字以內摘要"
 }}
 
 日記內容：
 {content}"""
-                }]
-            },
-            timeout=30.0
-        )
-        claude_response.raise_for_status()
-        parsed_text = claude_response.json()["content"][0]["text"]
-        print("Claude raw:", parsed_text)
 
-        # 清除 markdown
-        parsed_text = parsed_text.strip()
-        if parsed_text.startswith("```"):
-            parsed_text = parsed_text.split("```")[1]
-            if parsed_text.startswith("json"):
-                parsed_text = parsed_text[4:]
-        parsed = json.loads(parsed_text.strip())
-        print("parsed:", parsed)
+            claude_response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "claude-3-5-sonnet-20241022",   # 正確 model name
+                    "max_tokens": 350,                        # 大幅降低
+                    "temperature": 0.3,
+                    "messages": [{
+                        "role": "user",
+                        "content": optimized_prompt
+                    }]
+                },
+                timeout=30.0
+            )
+            claude_response.raise_for_status()
+            
+            claude_data = claude_response.json()
+            parsed_text = claude_data["content"][0]["text"]
+            
+            # 記錄 Token 使用量（重要！）
+            usage = claude_data.get("usage", {})
+            logger.info(f"Claude Token 使用 - Input: {usage.get('input_tokens')} | "
+                       f"Output: {usage.get('output_tokens')} | "
+                       f"Total: {usage.get('input_tokens', 0) + usage.get('output_tokens', 0)}")
 
-        # 第三步：插入摘要
-        summary_res = await client.post(
-            f"{SUPABASE_URL}/rest/v1/diary_summaries",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            },
-            json={
-                "diary_id": diary_id,
-                "diary_date": parsed.get("diary_date"),
-                "location": parsed.get("location"),
-                "people": parsed.get("people"),
-                "emotion": parsed.get("emotion"),
-                "keywords": parsed.get("keywords"),
-                "summary": parsed.get("summary")
-            }
-        )
-        print("Summary insert:", summary_res.status_code, summary_res.text)
+            # ==================== 3. 強健 JSON 解析 ====================
+            try:
+                # 先清理文字
+                cleaned_text = parsed_text.strip()
+                if cleaned_text.startswith("```"):
+                    cleaned_text = cleaned_text.split("```")[1]
+                    if cleaned_text.startswith("json"):
+                        cleaned_text = cleaned_text[4:].strip()
+                
+                # 使用 json-repair 增強容錯
+                parsed = repair_json(cleaned_text)
+                parsed = json.loads(parsed) if isinstance(parsed, str) else parsed
 
-        # 第四步：更新 is_processed
-        await client.patch(
-            f"{SUPABASE_URL}/rest/v1/diaries?id=eq.{diary_id}",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={"is_processed": True}
-        )
-        print("Done!")
+            except Exception as e:
+                logger.error(f"JSON 解析失敗 - Raw: {parsed_text[:300]}...")
+                raise ValueError(f"JSON 解析失敗: {str(e)}")
 
+            # ==================== 4. 插入摘要 ====================
+            summary_res = await client.post(
+                f"{SUPABASE_URL}/rest/v1/diary_summaries",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json={
+                    "diary_id": diary_id,
+                    "diary_date": parsed.get("diary_date"),
+                    "location": parsed.get("location"),
+                    "people": parsed.get("people"),
+                    "emotion": parsed.get("emotion"),
+                    "keywords": parsed.get("keywords"),
+                    "summary": parsed.get("summary")
+                },
+                timeout=10.0
+            )
+            summary_res.raise_for_status()
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    signature = request.headers.get("X-Line-Signature", "")
-    body = await request.body()
+            # ==================== 5. 更新處理狀態 ====================
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/diaries?id=eq.{diary_id}",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"is_processed": True},
+                timeout=10.0
+            )
 
+            logger.info(f"日記處理完成 - ID: {diary_id}")
+
+    except httpx.TimeoutException:
+        logger.error(f"請求超時 - diary_id: {diary_id}")
+        await mark_diary_as_failed(diary_id, "timeout")
+    except Exception as e:
+        logger.exception(f"處理日記失敗 - diary_id: {diary_id}")
+        await mark_diary_as_failed(diary_id, "error", str(e))
+
+async def mark_diary_as_failed(diary_id: str = None, reason: str = "unknown", error_msg: str = None):
+    if not diary_id:
+        return
     try:
-        handler.handle(body.decode("utf-8"), signature)
-    except InvalidSignatureError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-
-    return "OK"
-
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_message = event.message.text
-    user_id = event.source.user_id
-
-    if user_message.startswith("/日記"):
-        content = user_message[3:].strip()
-        word_count = len(content)
-
-        asyncio.create_task(
-            insert_diary_and_parse(content, user_id, word_count)
-        )
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="✅ 日記已收到，AI 正在解析中...")
-        )
-    else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="🚧 功能開發中")
-        )
+        async with httpx.AsyncClient() as client:
+            await client.patch(
+                f"{SUPABASE_URL}/rest/v1/diaries?id=eq.{diary_id}",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "is_processed": True,
+                    "process_failed": True,
+                    "fail_reason": reason
+                }
+            )
+    except:
+        pass  # 避免錯誤處理函數本身出錯
