@@ -103,24 +103,26 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
         parsed = json.loads(parsed_text.strip())
 
         # 第三步：插入摘要
-        await client.post(
-            f"{SUPABASE_URL}/rest/v1/diary_summaries",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "return=minimal"
-            },
-            json={
-                "diary_id": diary_id,
-                "diary_date": parsed.get("diary_date"),
-                "location": parsed.get("location"),
-                "people": parsed.get("people"),
-                "emotion": parsed.get("emotion"),
-                "keywords": parsed.get("keywords"),
-                "summary": parsed.get("summary")
-            }
-        )
+print("parsed result:", parsed)
+summary_res = await client.post(
+    f"{SUPABASE_URL}/rest/v1/diary_summaries",
+    headers={
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    },
+    json={
+        "diary_id": diary_id,
+        "diary_date": parsed.get("diary_date"),
+        "location": parsed.get("location"),
+        "people": parsed.get("people"),
+        "emotion": parsed.get("emotion"),
+        "keywords": parsed.get("keywords"),
+        "summary": parsed.get("summary")
+    }
+)
+print("Summary insert status:", summary_res.status_code, summary_res.text)
 
         # 第四步：更新 is_processed
         await client.patch(
