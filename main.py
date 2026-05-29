@@ -9,6 +9,7 @@ import httpx
 import json
 import asyncio
 import logging
+import voyageai
 
 load_dotenv()
 
@@ -21,6 +22,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY")
 
 if not LINE_CHANNEL_ACCESS_TOKEN:
     raise RuntimeError("Missing LINE_CHANNEL_ACCESS_TOKEN")
@@ -140,6 +142,27 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 timeout=10.0
             )
             logger.info(f"日記處理完成 - ID: {diary_id}")
+
+            # 第六步：產生向量嵌入
+            voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
+            result = voyage_client.embed([content], model="voyage-3-lite")
+            embedding = result.embeddings[0]
+
+            await client.post(
+                f"{SUPABASE_URL}/rest/v1/diary_embeddings",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                },
+                json={
+                    "diary_id": diary_id,
+                    "embedding": embedding
+                },
+                timeout=10.0
+            )
+            logger.info(f"向量嵌入完成 - ID: {diary_id}")
 
     except Exception as e:
         logger.exception(f"處理日記失敗 - diary_id: {diary_id}, error: {e}")
