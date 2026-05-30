@@ -64,7 +64,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
             )
             response.raise_for_status()
             diary_id = response.json()[0]["id"]
-            logger.info(f"日記已儲存 - ID: {diary_id}")
+            print(f"日記已儲存 - ID: {diary_id}")
 
             # 第二步：呼叫 Claude API
             claude_response = await client.post(
@@ -128,7 +128,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 },
                 timeout=10.0
             )
-            logger.info(f"摘要插入: {summary_res.status_code}")
+            print(f"摘要插入: {summary_res.status_code}")
 
             # 第五步：更新 is_processed
             await client.patch(
@@ -141,7 +141,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 json={"is_processed": True},
                 timeout=10.0
             )
-            logger.info(f"日記處理完成 - ID: {diary_id}")
+            print(f"日記處理完成 - ID: {diary_id}")
 
             # 第六步：產生向量嵌入
             voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
@@ -162,10 +162,12 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
                 },
                 timeout=10.0
             )
-            logger.info(f"向量嵌入完成 - ID: {diary_id}")
+            print(f"向量嵌入完成 - ID: {diary_id}")
+
 
     except Exception as e:
-        logger.exception(f"處理日記失敗 - diary_id: {diary_id}, error: {e}")
+        print(f"處理日記失敗 - diary_id: {diary_id}, error: {e}")
+
 
 
 @app.post("/webhook")
