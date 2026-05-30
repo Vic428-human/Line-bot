@@ -38,6 +38,83 @@ if not ANTHROPIC_API_KEY:
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+async def rag_query_and_reply(question: str, user_id: str, reply_token: str):
+    try:
+        # 第一步：把問題轉成向量
+        voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
+        result = voyage_client.embed([question], model="voyage-3-lite")
+        query_embedding = result.embeddings[0]
+
+        # 第二步：搜尋相關日記
+        async with httpx.AsyncClient() as client:
+            search_res = await client.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/match_diaries",
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "query_embedding": query_embedding,
+                    "match_count": 5
+                },
+                timeout=15.0
+            )
+            search_res.raise_for_status()
+            matches = search_res.json()
+            print(f"找到 {len(matches)} 筆相關日記")
+
+            if not matches:
+                line_bot_api.reply_message(
+                    reply_token,
+                    TextSendMessage(text="還沒有足夠的日記資料來回答這個問題 🤔")
+                )
+                return
+
+            # 第三步：組合日記內容
+            diary_context = "\n\n".join([
+                f"日記（{m.get('diary_date', '日期不明')}）：{m['content']}"
+                for m in matches
+            ])
+
+            # 第四步：呼叫 Claude 回答
+            claude_res = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "claude-sonnet-4-5",
+                    "max_tokens": 500,
+                    "messages": [{
+                        "role": "user",
+                        "content": f"""你是一個幫助用戶回顧日記的助手。根據以下日記內容回答用戶的問題，用溫暖親切的語氣，回答盡量簡短。
+
+日記內容：
+{diary_context}
+
+用戶問題：{question}"""
+                    }]
+                },
+                timeout=30.0
+            )
+            claude_res.raise_for_status()
+            answer = claude_res.json()["content"][0]["text"]
+
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=answer)
+            )
+
+    except Exception as e:
+        print(f"RAG 查詢失敗: {e}")
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="查詢日記時發生錯誤，請稍後再試 🙏")
+        )
+
 
 async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
     diary_id = None
@@ -202,7 +279,11 @@ def handle_message(event):
             TextSendMessage(text="✅ 日記已收到，AI 正在解析中...")
         )
     else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="🚧 功能開發中")
+        # line_bot_api.reply_message(
+        #     event.reply_token,
+        #     TextSendMessage(text="🚧 功能開發中")
+        # )
+        # 啟動 RAG 問答
+        asyncio.create_task(
+            rag_query_and_reply(user_message, user_id, event.reply_token)
         )
