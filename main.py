@@ -147,6 +147,7 @@ async def insert_diary_and_parse(content: str, user_id: str, word_count: int):
             voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
             result = voyage_client.embed([content], model="voyage-3-lite")
             embedding = result.embeddings[0]
+            print(f"embedding type: {type(embedding)}, length: {len(embedding)}, sample: {embedding[:3]}")
 
             await client.post(
                 f"{SUPABASE_URL}/rest/v1/diary_embeddings",
